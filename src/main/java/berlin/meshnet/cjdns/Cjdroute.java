@@ -12,13 +12,18 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.DataOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.Locale;
+import java.util.UUID;
 
 import berlin.meshnet.cjdns.util.InputStreamObservable;
 import rx.Observable;
 import rx.Subscriber;
+import rx.android.schedulers.AndroidSchedulers;
 import rx.functions.Action0;
 import rx.functions.Action1;
 import rx.functions.Func1;
@@ -28,6 +33,12 @@ import rx.schedulers.Schedulers;
  * Methods for managing the execution of cjdroute.
  */
 abstract class Cjdroute {
+
+    static {
+        System.loadLibrary("sendfd");
+    }
+
+    public static native int sendfd(String path, int tun_fd);
 
     /**
      * The filename for the cjdroute executable.
@@ -66,7 +77,8 @@ abstract class Cjdroute {
                 .filter(new Func1<Integer, Boolean>() {
                     @Override
                     public Boolean call(Integer pid) {
-                        return pid != INVALID_PID;
+//                        return pid != INVALID_PID;
+                        return true;
                     }
                 });
     }
@@ -150,11 +162,6 @@ abstract class Cjdroute {
         private static final String TAG = Compat.class.getSimpleName();
 
         /**
-         * Command to substitute user to root.
-         */
-        private static final String CMD_SUBSTITUTE_ROOT_USER = "su";
-
-        /**
          * Command divider.
          */
         private static final String CMD_NEWLINE = "\n";
@@ -167,7 +174,7 @@ abstract class Cjdroute {
         /**
          * Command template to execute cjdroute.
          */
-        private static final String CMD_EXECUTE_CJDROUTE = "%1$s/" + FILENAME_CJDROUTE + " < %2$s/" + CjdrouteConf.FILENAME_CJDROUTE_CONF;
+        private static final String CMD_EXECUTE_CJDROUTE = "%1$s/" + FILENAME_CJDROUTE + " --nobg";
 
         /**
          * Command template to terminate process by PID.
@@ -192,53 +199,66 @@ abstract class Cjdroute {
                 public void onNext(JSONObject cjdrouteConf) {
                     DataOutputStream os = null;
                     try {
-                        java.lang.Process process = Runtime.getRuntime().exec(CMD_SUBSTITUTE_ROOT_USER);
+//                        java.lang.Process process = Runtime.getRuntime().exec(String.format(CMD_EXECUTE_CJDROUTE, mContext.getFilesDir().getPath()));
 
-                        // Subscribe to input stream.
-                        final InputStream is = process.getInputStream();
-                        InputStreamObservable.line(is)
-                                .subscribeOn(Schedulers.io())
-                                .observeOn(Schedulers.io())
-                                .subscribe(
-                                        new Action1<String>() {
-                                            @Override
-                                            public void call(String line) {
-                                                Log.i(TAG, line);
-                                            }
-                                        }, new Action1<Throwable>() {
-                                            @Override
-                                            public void call(Throwable throwable) {
-                                                Log.e(TAG, "Failed to parse input stream", throwable);
-                                                if (is != null) {
-                                                    try {
-                                                        is.close();
-                                                    } catch (IOException e) {
-                                                        // Do nothing.
-                                                    }
-                                                }
-                                            }
-                                        },
-                                        new Action0() {
-                                            @Override
-                                            public void call() {
-                                                Log.i(TAG, "Completed parsing of input stream");
-                                                if (is != null) {
-                                                    try {
-                                                        is.close();
-                                                    } catch (IOException e) {
-                                                        // Do nothing.
-                                                    }
-                                                }
-                                            }
-                                        });
+                        String pipe = UUID.randomUUID().toString();
+                        java.lang.Process process = new ProcessBuilder("./cjdroute", "core", "/data/data/berlin.meshnet.cjdns/files", pipe)
+                                .directory(new File("/data/data/berlin.meshnet.cjdns/files"))
+                                .redirectErrorStream(true)
+                                .start();
+
+                        java.lang.Process process2 = new ProcessBuilder("./cjdroute-init", "/data/data/berlin.meshnet.cjdns/files", pipe, "069fd9786f2ac066babfda45ad023e9f5dd208bb491a158ab91342b00fbdeb32", "127.0.0.1:11234", "NONE")
+                                .directory(new File("/data/data/berlin.meshnet.cjdns/files"))
+                                .redirectErrorStream(true)
+                                .start();
+
+//                        // Subscribe to input stream.
+//                        final InputStream is = process.getInputStream();
+//                        InputStreamObservable.line(is)
+//                                .subscribeOn(Schedulers.newThread())
+//                                .observeOn(Schedulers.immediate())
+//                                .subscribe(
+//                                        new Action1<String>() {
+//                                            @Override
+//                                            public void call(String line) {
+//                                                Log.i(TAG, "IS: " + line);
+//                                            }
+//                                        }, new Action1<Throwable>() {
+//                                            @Override
+//                                            public void call(Throwable throwable) {
+//                                                Log.e(TAG, "Failed to parse input stream", throwable);
+//                                                if (is != null) {
+//                                                    try {
+//                                                        is.close();
+//                                                    } catch (IOException e) {
+//                                                        // Do nothing.
+//                                                    }
+//                                                }
+//                                            }
+//                                        },
+//                                        new Action0() {
+//                                            @Override
+//                                            public void call() {
+//                                                Log.i(TAG, "Completed parsing of input stream");
+//                                                if (is != null) {
+//                                                    try {
+//                                                        is.close();
+//                                                    } catch (IOException e) {
+//                                                        // Do nothing.
+//                                                    }
+//                                                }
+//                                            }
+//                                        });
 
                         // Subscribe to error stream.
-                        final AdminApi adminApi = AdminApi.from(cjdrouteConf);
+                        // final AdminApi adminApi = AdminApi.from(cjdrouteConf);
+                        final AdminApi adminApi = new AdminApi(InetAddress.getByName("127.0.0.1"), 11234, "NONE".getBytes());
                         final String adminLine = String.format(Locale.ENGLISH, LINE_ADMIN_API, adminApi.getBind());
-                        final InputStream es = process.getErrorStream();
+//                        final InputStream es = process.getErrorStream();
+                        final InputStream es = process.getInputStream();
                         InputStreamObservable.line(es)
-                                .subscribeOn(Schedulers.io())
-                                .observeOn(Schedulers.io())
+                                .subscribeOn(Schedulers.newThread())
+                                .observeOn(Schedulers.immediate())
                                 .subscribe(
                                         new Action1<String>() {
                                             @Override
@@ -246,19 +266,21 @@ abstract class Cjdroute {
                                                 Log.i(TAG, line);
 
                                                 // Find and store cjdroute PID.
-                                                if (line.contains(adminLine)) {
-                                                    try {
-                                                        int pid = adminApi.corePid();
-
-                                                        // Store PID on disk to persist across java process crashes.
-                                                        SharedPreferences.Editor editor = PreferenceManager
-                                                                .getDefaultSharedPreferences(mContext.getApplicationContext()).edit();
-                                                        editor.putInt(SHARED_PREFERENCES_KEY_CJDROUTE_PID, pid);
-                                                        editor.apply();
-                                                    } catch (IOException e) {
-                                                        Log.e(TAG, "Failed to get cjdroute PID", e);
-                                                    }
-                                                }
+                                                // TODO Apply filter operator on the line.
+//                                                if (line.contains(adminLine)) {
+//                                                    try {
+//                                                        // TODO Apply runStuff as operator.
+//                                                        int pid = adminApi.runStuff();
+//
+//                                                        // Store PID on disk to persist across java process crashes.
+//                                                        SharedPreferences.Editor editor = PreferenceManager
+//                                                                .getDefaultSharedPreferences(mContext.getApplicationContext()).edit();
+//                                                        editor.putInt(SHARED_PREFERENCES_KEY_CJDROUTE_PID, pid);
+//                                                        editor.apply();
+//                                                    } catch (IOException e) {
+//                                                        Log.e(TAG, "Failed to get cjdroute PID", e);
+//                                                    }
+//                                                }
                                             }
                                         }, new Action1<Throwable>() {
                                             @Override
@@ -290,11 +312,42 @@ abstract class Cjdroute {
                         // Execute cjdroute.
                         String filesDir = mContext.getFilesDir().getPath();
                         os = new DataOutputStream(process.getOutputStream());
-                        os.writeBytes(String.format(CMD_EXECUTE_CJDROUTE, filesDir, filesDir));
-                        os.writeBytes(CMD_NEWLINE);
-                        os.writeBytes(CMD_ADD_DEFAULT_ROUTE);
+                        String conf = "{\n" +
+                                "  \"pipe\": \"/data/data/berlin.meshnet.cjdns\",\n" +
+                                "  \"security\": [\n" +
+                                "    {\n" +
+                                "      \"keepNetAdmin\": 1,\n" +
+                                "      \"setuser\": 0\n" +
+                                "    },\n" +
+                                "    {\n" +
+                                "      \"chroot\": 0\n" +
+                                "    },\n" +
+                                "    {\n" +
+                                "      \"nofiles\": 0\n" +
+                                "    },\n" +
+                                "    {\n" +
+                                "      \"noforks\": 1\n" +
+                                "    },\n" +
+                                "    {\n" +
+                                "      \"seccomp\": 0\n" +
+                                "    },\n" +
+                                "    {\n" +
+                                "      \"setupComplete\": 1\n" +
+                                "    }\n" +
+                                "  ],\n" +
+                                "  \"admin\": {\n" +
+                                "    \"password\": \"NONE\",\n" +
+                                "    \"bind\": \"127.0.0.1:11234\"\n" +
+                                "  },\n" +
+                                "  \"privateKey\": \"59ae83c9cd94a18add9d76096ca85a4005683f18ad997236e7ad5660b9b77c4c\",\n" +
+                                "  \"publicKey\": \"pmr3bqsp33rdu9d6grf243wrc7kbsdzwubg5sg3gmz68u1hgznn0.k\",\n" +
+                                "  \"ipv6\": \"fce5:c180:6bff:a33f:c0b3:f22a:945d:ca39\"\n" +
+                                "}";
+                        os.writeBytes(conf);
+//                        os.writeBytes(CMD_NEWLINE);
+//                        os.writeBytes(CMD_ADD_DEFAULT_ROUTE);
                         os.flush();
-                    } catch (IOException | JSONException e) {
+                    } catch (IOException e) {
                         Log.e(TAG, "Failed to execute cjdroute", e);
                     } finally {
                         if (os != null) {
@@ -326,30 +379,19 @@ abstract class Cjdroute {
                 public void onNext(Integer pid) {
                     Log.i(TAG, "Terminating cjdroute with pid=" + pid);
 
-                    // Kill cjdroute as root.
-                    DataOutputStream os = null;
                     try {
-                        java.lang.Process process = Runtime.getRuntime().exec(CMD_SUBSTITUTE_ROOT_USER);
-                        os = new DataOutputStream(process.getOutputStream());
-                        os.writeBytes(String.format(Locale.ENGLISH, CMD_KILL_PROCESS, pid));
-                        os.flush();
-
-                        // Erase PID.
-                        SharedPreferences.Editor editor = PreferenceManager
-                                .getDefaultSharedPreferences(mContext.getApplicationContext()).edit();
-                        editor.putInt(SHARED_PREFERENCES_KEY_CJDROUTE_PID, INVALID_PID);
-                        editor.apply();
+                        AdminApi api = new AdminApi(InetAddress.getByName("127.0.0.1"), 11234, "NONE".getBytes());
+                        AdminApi.Core.exit(api).toBlocking().first();
                     } catch (IOException e) {
-                        Log.e(TAG, "Failed to terminate cjdroute", e);
-                    } finally {
-                        if (os != null) {
-                            try {
-                                os.close();
-                            } catch (IOException e) {
-                                // Do nothing.
-                            }
-                        }
+                        e.printStackTrace();
                     }
+//                    Process.killProcess(pid);
+
+                    // Erase PID.
+                    SharedPreferences.Editor editor = PreferenceManager
+                            .getDefaultSharedPreferences(mContext.getApplicationContext()).edit();
+                    editor.putInt(SHARED_PREFERENCES_KEY_CJDROUTE_PID, INVALID_PID);
+                    editor.apply();
                 }
 
                 @Override
